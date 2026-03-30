@@ -4,6 +4,7 @@ import cloudinary.uploader
 import requests
 from bs4 import BeautifulSoup
 import re
+import time
 
 # --- 1. PASSWORD PROTECTION ---
 def check_password():
@@ -15,18 +16,18 @@ def check_password():
             st.session_state["password_correct"] = False
 
     if "password_correct" not in st.session_state:
-        st.title("🔒 Access Restricted")
+        st.title("🔒 Car Porter Access")
         st.text_input("Enter Access Code:", type="password", on_change=password_entered, key="password")
         return False
     elif not st.session_state["password_correct"]:
-        st.title("🔒 Access Restricted")
+        st.title("🔒 Car Porter Access")
         st.text_input("Enter Access Code:", type="password", on_change=password_entered, key="password")
         st.error("❌ Incorrect Access Code.")
         return False
     else:
         return True
 
-# --- 2. CONFIGURATION & SCRAPER LOGIC ---
+# --- 2. CLOUDINARY CONFIG ---
 def init_cloudinary():
     try:
         cloudinary.config(
@@ -39,95 +40,101 @@ def init_cloudinary():
         st.error(f"Cloudinary Config Error: {e}")
         return False
 
+# --- 3. ADVANCED SCRAPER LOGIC ---
 def extract_car_data(url):
-    # Use a more realistic browser header to prevent blocking
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.google.com/"
     }
+    
+    images = []
+    car_name = "Imported_Car"
+    
+    # Extract ID for SBT
+    sbt_id_match = re.search(r'([A-Z]{2}\d{4,})', url)
+    car_id = sbt_id_match.group(1) if sbt_id_match else None
+
     try:
+        # Try to fetch the page
         res = requests.get(url, headers=headers, timeout=15)
-        res.raise_for_status()
         soup = BeautifulSoup(res.text, 'html.parser')
         
-        # 1. Determine Car Title
-        title = "Imported_Car"
-        if "sbtjapan" in url:
-            # Try to get the ID from the URL (e.g., AB5611)
-            url_parts = url.split('/')
-            car_id = url_parts[-2] if "photolist" in url else url_parts[-1]
-            title = f"SBT_{car_id}"
-        elif soup.find('h1'):
-            title = soup.find('h1').text.strip()
-        
-        images = []
+        if soup.find('h1'):
+            car_name = soup.find('h1').text.strip()
+        elif car_id:
+            car_name = f"SBT_{car_id}"
 
-        # 2. SBT JAPAN SPECIFIC LOGIC (Regex scan for lazy-loaded images)
+        # --- SBT SPECIFIC LOGIC ---
         if "sbtjapan.com" in url:
-            # This finds all high-res images in the page source text, even if hidden in Javascript
+            # Method A: Scrape standard links
             found_images = re.findall(r'https://images\.sbtjapan\.com/images/car/[^"\'>\s]+\.jpg', res.text)
             for img in found_images:
-                # SBT often lists thumbnails and large images. We want the ones without "_t" (thumbnail)
-                full_img = img.replace('_t.jpg', '.jpg')
-                if full_img not in images:
-                    images.append(full_img)
-        
-        # 3. BEFORWARD SPECIFIC LOGIC
+                full_img = img.replace('_t.jpg', '.jpg').replace('_m.jpg', '.jpg')
+                if full_img not in images: images.append(full_img)
+            
+            # Method B: Direct Probe (If A finds nothing)
+            if len(images) < 5 and car_id:
+                st.info(f"Page content restricted. Probing SBT image servers for ID: {car_id}...")
+                for i in range(1, 31): # Try first 30 images
+                    test_url = f"https://images.sbtjapan.com/images/car/{car_id}/{i}.jpg"
+                    # We check if image exists with a HEAD request (fast)
+                    if requests.head(test_url, headers=headers).status_code == 200:
+                        images.append(test_url)
+                    else:
+                        break # Stop when no more images are found
+
+        # --- BEFORWARD SPECIFIC LOGIC ---
         elif "beforward.jp" in url:
             for img in soup.find_all('img', src=re.compile(r'catalog')):
                 src = img.get('src')
-                # Convert thumbnail /t/ to large /l/
                 large_url = src.replace('/t/', '/l/').split('?')[0]
                 if not large_url.startswith('http'): large_url = "https:" + large_url
                 if large_url not in images: images.append(large_url)
-        
-        # 4. FALLBACK
+
+        # --- FALLBACK ---
         else:
             for img in soup.find_all('img'):
                 src = img.get('src')
                 if src and src.startswith('http'): images.append(src)
 
-        return images, title
-
     except Exception as e:
-        st.error(f"Error fetching {url}: {e}")
-        return [], "Error"
+        st.error(f"Connection error: {e}")
+        
+    return list(dict.fromkeys(images)), car_name # Deduplicate while keeping order
 
-# --- 3. MAIN APP UI ---
-st.set_page_config(page_title="Car Image Porter", page_icon="📸")
+# --- 4. MAIN APP UI ---
+st.set_page_config(page_title="Car Image Porter", page_icon="🚗")
 
 if check_password():
     st.title("🚗 Car Image Auto-Porter")
-    st.markdown("Works with **SBTJapan (including Photolists)** and **BeForward**.")
+    st.write("Bypassing dealer blocks for **SBTJapan** and **BeForward**.")
 
     if init_cloudinary():
-        raw_input = st.text_area(
-            "Paste Links (One per line):", 
-            height=150, 
-            placeholder="https://www.sbtjapan.com/mn/used-cars/AB5611/photolist"
-        )
+        raw_input = st.text_area("Paste links (Comma or New Line separated):", height=150)
 
-        if st.button("🚀 Process & Upload to Cloudinary"):
+        if st.button("🚀 Process & Upload"):
             links = [l.strip() for l in re.split(r'[,\n]', raw_input) if l.strip()]
 
             if not links:
                 st.error("No links provided.")
             else:
                 for idx, link in enumerate(links):
-                    with st.expander(f"Car {idx+1}: {link[:50]}...", expanded=True):
+                    with st.expander(f"Car {idx+1}: {link[:40]}...", expanded=True):
                         img_urls, car_name = extract_car_data(link)
                         
                         if not img_urls:
-                            st.warning(f"No images found for {link}. The site might be blocking the request.")
+                            st.error("❌ Still no images found. The site is heavily blocking this server.")
                             continue
                         
-                        st.write(f"✅ Found **{len(img_urls)}** images for: **{car_name}**")
+                        st.write(f"✅ Found **{len(img_urls)}** high-res images.")
                         
                         progress_bar = st.progress(0)
                         uploaded_urls = []
                         folder_name = re.sub(r'[^a-zA-Z0-9]', '_', car_name)[:50]
 
-                        # Cloudinary Upload
-                        for i, img_url in enumerate(img_urls[:40]): # Increased limit to 40 for photolists
+                        for i, img_url in enumerate(img_urls):
                             try:
                                 res = cloudinary.uploader.upload(
                                     img_url,
@@ -137,11 +144,10 @@ if check_password():
                                 uploaded_urls.append(res['secure_url'])
                             except:
                                 pass
-                            progress_bar.progress((i + 1) / min(len(img_urls), 40))
+                            progress_bar.progress((i + 1) / len(img_urls))
                         
                         if uploaded_urls:
-                            st.success(f"Uploaded {len(uploaded_urls)} images!")
-                            st.image(uploaded_urls[0], width=300)
-                            st.text_area("Cloudinary Links (Comma Separated):", value=", ".join(uploaded_urls), key=f"out_{idx}")
-                
+                            st.success(f"Uploaded {len(uploaded_urls)} images to Cloudinary!")
+                            st.text_area("Copy Links:", value=", ".join(uploaded_urls), key=f"out_{idx}")
+                            st.image(uploaded_urls[0], width=200)
                 st.balloons()
