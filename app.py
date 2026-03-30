@@ -1,10 +1,7 @@
 import streamlit as st
 import cloudinary
 import cloudinary.uploader
-import requests
-from bs4 import BeautifulSoup
 import re
-import time
 
 # --- 1. PASSWORD PROTECTION ---
 def check_password():
@@ -16,11 +13,11 @@ def check_password():
             st.session_state["password_correct"] = False
 
     if "password_correct" not in st.session_state:
-        st.title("🔒 Car Porter Access")
+        st.title("🔒 Inventory Upload Portal")
         st.text_input("Enter Access Code:", type="password", on_change=password_entered, key="password")
         return False
     elif not st.session_state["password_correct"]:
-        st.title("🔒 Car Porter Access")
+        st.title("🔒 Inventory Upload Portal")
         st.text_input("Enter Access Code:", type="password", on_change=password_entered, key="password")
         st.error("❌ Incorrect Access Code.")
         return False
@@ -40,114 +37,96 @@ def init_cloudinary():
         st.error(f"Cloudinary Config Error: {e}")
         return False
 
-# --- 3. ADVANCED SCRAPER LOGIC ---
-def extract_car_data(url):
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Referer": "https://www.google.com/"
-    }
-    
-    images = []
-    car_name = "Imported_Car"
-    
-    # Extract ID for SBT
-    sbt_id_match = re.search(r'([A-Z]{2}\d{4,})', url)
-    car_id = sbt_id_match.group(1) if sbt_id_match else None
-
-    try:
-        # Try to fetch the page
-        res = requests.get(url, headers=headers, timeout=15)
-        soup = BeautifulSoup(res.text, 'html.parser')
-        
-        if soup.find('h1'):
-            car_name = soup.find('h1').text.strip()
-        elif car_id:
-            car_name = f"SBT_{car_id}"
-
-        # --- SBT SPECIFIC LOGIC ---
-        if "sbtjapan.com" in url:
-            # Method A: Scrape standard links
-            found_images = re.findall(r'https://images\.sbtjapan\.com/images/car/[^"\'>\s]+\.jpg', res.text)
-            for img in found_images:
-                full_img = img.replace('_t.jpg', '.jpg').replace('_m.jpg', '.jpg')
-                if full_img not in images: images.append(full_img)
-            
-            # Method B: Direct Probe (If A finds nothing)
-            if len(images) < 5 and car_id:
-                st.info(f"Page content restricted. Probing SBT image servers for ID: {car_id}...")
-                for i in range(1, 31): # Try first 30 images
-                    test_url = f"https://images.sbtjapan.com/images/car/{car_id}/{i}.jpg"
-                    # We check if image exists with a HEAD request (fast)
-                    if requests.head(test_url, headers=headers).status_code == 200:
-                        images.append(test_url)
-                    else:
-                        break # Stop when no more images are found
-
-        # --- BEFORWARD SPECIFIC LOGIC ---
-        elif "beforward.jp" in url:
-            for img in soup.find_all('img', src=re.compile(r'catalog')):
-                src = img.get('src')
-                large_url = src.replace('/t/', '/l/').split('?')[0]
-                if not large_url.startswith('http'): large_url = "https:" + large_url
-                if large_url not in images: images.append(large_url)
-
-        # --- FALLBACK ---
-        else:
-            for img in soup.find_all('img'):
-                src = img.get('src')
-                if src and src.startswith('http'): images.append(src)
-
-    except Exception as e:
-        st.error(f"Connection error: {e}")
-        
-    return list(dict.fromkeys(images)), car_name # Deduplicate while keeping order
-
-# --- 4. MAIN APP UI ---
-st.set_page_config(page_title="Car Image Porter", page_icon="🚗")
+# --- 3. MAIN APP UI ---
+st.set_page_config(page_title="Car Image Uploader", page_icon="📤")
 
 if check_password():
-    st.title("🚗 Car Image Auto-Porter")
-    st.write("Bypassing dealer blocks for **SBTJapan** and **BeForward**.")
+    st.title("📤 Car Image & Metadata Uploader")
+    st.markdown("Upload local images and assign metadata for your inventory.")
 
     if init_cloudinary():
-        raw_input = st.text_area("Paste links (Comma or New Line separated):", height=150)
+        # --- METADATA SECTION ---
+        st.header("1. Car Details (Metadata)")
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            brand = st.text_input("Brand", placeholder="e.g. TOYOTA")
+            model = st.text_input("Model", placeholder="e.g. PRIUS")
+        with col2:
+            year = st.text_input("Year", placeholder="e.g. 2015")
+            vin = st.text_input("VIN / Chassis No", placeholder="e.g. ZVW30-1234567")
+        with col3:
+            mileage = st.text_input("Mileage", placeholder="e.g. 120000")
+            status = st.selectbox("Status", ["Coming", "Available", "Sold"])
 
-        if st.button("🚀 Process & Upload"):
-            links = [l.strip() for l in re.split(r'[,\n]', raw_input) if l.strip()]
+        # --- FILE UPLOAD SECTION ---
+        st.header("2. Upload Images")
+        st.info("💡 **Tip:** To upload a folder, press `Ctrl+A` (or `Cmd+A`) inside the folder to select all images and drag them here.")
+        
+        uploaded_files = st.file_uploader(
+            "Select Images", 
+            type=['png', 'jpg', 'jpeg', 'webp'], 
+            accept_multiple_files=True
+        )
 
-            if not links:
-                st.error("No links provided.")
+        if uploaded_files:
+            st.write(f"📁 {len(uploaded_files)} images selected.")
+
+        # --- UPLOAD EXECUTION ---
+        if st.button("🚀 Start Bulk Upload"):
+            if not vin or not brand:
+                st.error("Please enter at least the Brand and VIN to organize files.")
+            elif not uploaded_files:
+                st.error("No images selected for upload.")
             else:
-                for idx, link in enumerate(links):
-                    with st.expander(f"Car {idx+1}: {link[:40]}...", expanded=True):
-                        img_urls, car_name = extract_car_data(link)
-                        
-                        if not img_urls:
-                            st.error("❌ Still no images found. The site is heavily blocking this server.")
-                            continue
-                        
-                        st.write(f"✅ Found **{len(img_urls)}** high-res images.")
-                        
-                        progress_bar = st.progress(0)
-                        uploaded_urls = []
-                        folder_name = re.sub(r'[^a-zA-Z0-9]', '_', car_name)[:50]
-
-                        for i, img_url in enumerate(img_urls):
-                            try:
-                                res = cloudinary.uploader.upload(
-                                    img_url,
-                                    folder = f"auto_imports/{folder_name}",
-                                    context = {"car_name": car_name, "source": link}
-                                )
-                                uploaded_urls.append(res['secure_url'])
-                            except:
-                                pass
-                            progress_bar.progress((i + 1) / len(img_urls))
-                        
-                        if uploaded_urls:
-                            st.success(f"Uploaded {len(uploaded_urls)} images to Cloudinary!")
-                            st.text_area("Copy Links:", value=", ".join(uploaded_urls), key=f"out_{idx}")
-                            st.image(uploaded_urls[0], width=200)
-                st.balloons()
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                uploaded_urls = []
+                
+                # Create a safe folder name
+                folder_path = f"inventory/{brand.upper()}/{vin.upper()}"
+                
+                for i, file in enumerate(uploaded_files):
+                    status_text.text(f"Uploading image {i+1} of {len(uploaded_files)}...")
+                    
+                    try:
+                        # Upload to Cloudinary
+                        # We use 'context' for metadata and 'tags' for categorization
+                        res = cloudinary.uploader.upload(
+                            file,
+                            folder = folder_path,
+                            use_filename = True,
+                            unique_filename = True,
+                            context = {
+                                "brand": brand,
+                                "model": model,
+                                "year": year,
+                                "vin": vin,
+                                "mileage": mileage,
+                                "status": status
+                            },
+                            tags = [brand, status, year]
+                        )
+                        uploaded_urls.append(res['secure_url'])
+                    except Exception as e:
+                        st.error(f"Failed to upload {file.name}: {e}")
+                    
+                    progress_bar.progress((i + 1) / len(uploaded_files))
+                
+                status_text.empty()
+                
+                if uploaded_urls:
+                    st.success(f"✅ Successfully uploaded {len(uploaded_urls)} images to Cloudinary!")
+                    st.balloons()
+                    
+                    # Output for copy-pasting back to Excel/Sheets
+                    st.subheader("Cloudinary URLs (Copy for your Sheet)")
+                    
+                    st.write("**Main Image (First one):**")
+                    st.code(uploaded_urls[0], language="text")
+                    
+                    st.write("**All Images (Comma Separated list):**")
+                    st.code(", ".join(uploaded_urls), language="text")
+                    
+                    # Preview the first image
+                    st.image(uploaded_urls[0], caption="Main Image Preview", width=300)
