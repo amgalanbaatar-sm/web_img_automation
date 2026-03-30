@@ -41,21 +41,37 @@ def init_cloudinary():
         return False
 
 # --- 3. MAIN APP UI ---
-# Changed layout to "centered" to fix the ultrawide screen stretching issue
-st.set_page_config(page_title="Bulk Car Uploader", page_icon="📤", layout="centered")
+# Set to wide, but we will constrain it with CSS below
+st.set_page_config(page_title="Bulk Car Uploader", page_icon="📤", layout="wide")
+
+# Custom CSS to force a responsive "laptop" width (max 1200px) on ultrawide monitors
+st.markdown(
+    """
+    <style>
+    .block-container {
+        max-width: 1200px;
+        padding-top: 2rem;
+        padding-bottom: 2rem;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
 
 if check_password():
     st.title("🚗 CSV-Driven Inventory Uploader")
     
     if init_cloudinary():
-        st.header("1. Upload Inventory CSV")
+        # Stepped down to subheader
+        st.subheader("1. Upload Inventory CSV")
         st.info("💡 Ensure your CSV has columns named **Brand**, **Series**, and **VIN**. Use a **Tags** column with dash-separated values (e.g., `Coming-Hot-Promo`).")
         
         uploaded_csv = st.file_uploader("Upload CSV File", type=['csv'])
         
         if uploaded_csv:
             df = pd.read_csv(uploaded_csv)
-            st.subheader("Data Preview")
+            # Stepped down to markdown to preserve visual hierarchy
+            st.markdown("#### Data Preview")
             st.dataframe(df.head(3), use_container_width=True)
             
             cols_lower = [str(c).lower().strip() for c in df.columns]
@@ -64,7 +80,8 @@ if check_password():
                 st.error("🚨 Missing required columns! Your CSV must contain 'Brand', 'Series', and 'VIN'.")
                 st.stop()
                 
-            st.header("2. Assign Images per Vehicle")
+            # Stepped down to subheader
+            st.subheader("2. Assign Images per Vehicle")
             
             upload_queue = []
             
@@ -81,7 +98,6 @@ if check_password():
                     with c1:
                         main_img = st.file_uploader("Upload Main Image (1)", type=['png', 'jpg', 'jpeg', 'webp'], key=f"main_{index}")
                     with c2:
-                        # Updated label to explicitly instruct users about the drag-and-drop folder feature
                         other_imgs = st.file_uploader("Upload Other Images (Drag & Drop a folder here)", type=['png', 'jpg', 'jpeg', 'webp'], accept_multiple_files=True, key=f"other_{index}")
                     
                     upload_queue.append({
@@ -94,7 +110,8 @@ if check_password():
                         "vin": vin
                     })
             
-            st.header("3. Execute Upload")
+            # Stepped down to subheader
+            st.subheader("3. Execute Upload")
             
             ready_to_process = any(item['main_img'] is not None or len(item['other_imgs']) > 0 for item in upload_queue)
             
@@ -171,7 +188,8 @@ if check_password():
 
             # --- 4. RESULTS & DOWNLOAD ---
             if 'processed_df' in st.session_state:
-                st.subheader("Final Output")
+                # Stepped down to markdown
+                st.markdown("#### Final Output")
                 st.dataframe(st.session_state['processed_df'], use_container_width=True)
                 
                 csv_data = st.session_state['processed_df'].to_csv(index=False).encode('utf-8')
