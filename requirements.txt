@@ -1,4 +1,2 @@
 streamlit
 cloudinary
-beautifulsoup4
-requests
