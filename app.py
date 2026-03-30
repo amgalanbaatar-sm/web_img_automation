@@ -1,7 +1,9 @@
 import streamlit as st
 import cloudinary
 import cloudinary.uploader
+import pandas as pd
 import re
+import io
 
 # --- 1. ACCESS CONTROL ---
 def check_password():
@@ -27,7 +29,6 @@ def check_password():
 # --- 2. CLOUDINARY CONFIG ---
 def init_cloudinary():
     try:
-        # Strictly follow the expert advice to use clean, stripped credentials
         cloudinary.config(
             cloud_name = st.secrets["CLOUDINARY_NAME"].strip(),
             api_key = st.secrets["CLOUDINARY_KEY"].strip(),
@@ -40,102 +41,157 @@ def init_cloudinary():
         return False
 
 # --- 3. MAIN APP UI ---
-st.set_page_config(page_title="Car Uploader", page_icon="📤")
+st.set_page_config(page_title="Bulk Car Uploader", page_icon="📤", layout="wide")
 
 if check_password():
-    st.title("🚗 Car Inventory Uploader")
+    st.title("🚗 CSV-Driven Inventory Uploader")
     
     if init_cloudinary():
-        # --- METADATA SECTION ---
-        st.header("1. Car Details")
-        c1, c2, c3 = st.columns(3)
+        st.header("1. Upload Inventory CSV")
+        st.info("💡 Ensure your CSV has columns named **Brand**, **Series**, and **VIN** to generate the folder paths correctly. Use a **Tags** column with dash-separated values (e.g., `Coming-Hot-Promo`).")
         
-        with c1:
-            brand_in = st.text_input("Brand", placeholder="TOYOTA").strip()
-            model_in = st.text_input("Model", placeholder="Sai").strip()
-        with c2:
-            year_in = st.text_input("Year", placeholder="2018").strip()
-            vin_in = st.text_input("VIN / Chassis", placeholder="AZK10-12345").strip()
-        with c3:
-            mileage_in = st.text_input("Mileage", placeholder="85000").strip()
-            status_in = st.selectbox("Status", ["Coming", "Available", "Sold"])
-
-        # --- FILE UPLOAD SECTION ---
-        st.header("2. Select Images")
-        uploaded_files = st.file_uploader(
-            "Select multiple images", 
-            type=['png', 'jpg', 'jpeg', 'webp'], 
-            accept_multiple_files=True
-        )
-
-        # --- UPLOAD EXECUTION ---
-        if st.button("🚀 Start Bulk Upload"):
-            if not vin_in or not brand_in:
-                st.error("Brand and VIN are required.")
-            elif not uploaded_files:
-                st.error("Please select at least one image.")
-            else:
+        uploaded_csv = st.file_uploader("Upload CSV File", type=['csv'])
+        
+        if uploaded_csv:
+            # Read CSV and display a preview
+            df = pd.read_csv(uploaded_csv)
+            st.subheader("Data Preview")
+            st.dataframe(df.head(3), use_container_width=True)
+            
+            # Force columns to lowercase for safe checking, but keep original for metadata
+            cols_lower = [str(c).lower().strip() for c in df.columns]
+            
+            if not all(req in cols_lower for req in ['brand', 'series', 'vin']):
+                st.error("🚨 Missing required columns! Your CSV must contain 'Brand', 'Series', and 'VIN'.")
+                st.stop()
+                
+            st.header("2. Assign Images per Vehicle")
+            
+            # Store references to widgets for processing later
+            upload_queue = []
+            
+            # Create a row-by-row UI using expanders
+            for index, row in df.iterrows():
+                row_dict = row.to_dict()
+                
+                # Safely extract path variables regardless of case
+                row_lower = {str(k).lower().strip(): v for k, v in row_dict.items()}
+                brand = str(row_lower.get('brand', 'Unknown'))
+                series = str(row_lower.get('series', 'Unknown'))
+                vin = str(row_lower.get('vin', 'Unknown'))
+                
+                with st.expander(f"🚙 {brand} {series} | VIN: {vin}", expanded=False):
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        main_img = st.file_uploader("Upload Main Image (1)", type=['png', 'jpg', 'jpeg', 'webp'], key=f"main_{index}")
+                    with c2:
+                        other_imgs = st.file_uploader("Upload Other Images (Multiple)", type=['png', 'jpg', 'jpeg', 'webp'], accept_multiple_files=True, key=f"other_{index}")
+                    
+                    upload_queue.append({
+                        "index": index,
+                        "row_dict": row_dict,
+                        "main_img": main_img,
+                        "other_imgs": other_imgs,
+                        "brand": brand,
+                        "series": series,
+                        "vin": vin
+                    })
+            
+            st.header("3. Execute Upload")
+            
+            # Enable button only if at least one image has been staged across all rows
+            ready_to_process = any(item['main_img'] is not None or len(item['other_imgs']) > 0 for item in upload_queue)
+            
+            if st.button("🚀 Begin Processing Staged Images", disabled=not ready_to_process, type="primary"):
                 progress_bar = st.progress(0)
                 status_text = st.empty()
-                uploaded_urls = []
                 
-                # Pruning and cleaning inputs
-                clean_brand = re.sub(r'[^a-zA-Z0-9]', '', brand_in).upper()
-                clean_vin = re.sub(r'[^a-zA-Z0-9]', '', vin_in).upper()
+                results = []
                 
-                # 1. BUILD CLEAN PARAMS (Strictly following expert diagnosis)
-                # We build a dictionary and ONLY add keys that have values.
-                # This prevents "key=|" (empty values) from entering the signature.
-                
-                # Build Context (Metadata)
-                ctx = {}
-                if brand_in: ctx["brand"] = brand_in
-                if model_in: ctx["model"] = model_in
-                if year_in: ctx["year"] = year_in
-                if vin_in: ctx["vin"] = vin_in
-                if mileage_in: ctx["mileage"] = mileage_in
-                ctx["status"] = status_in
-
-                # Build Tags
-                tags = [clean_brand, status_in]
-                if year_in: tags.append(year_in)
-
-                # Initialize final params dictionary
-                # This dictionary contains only non-empty, valid parameters
-                upload_params = {
-                    "folder": f"inventory/{clean_brand}/{clean_vin}",
-                    "tags": tags,
-                    "context": ctx,
-                    "use_filename": True,
-                    "unique_filename": True,
-                    "overwrite": True
-                }
-
-                # 2. LOOP THROUGH FILES
-                for i, file in enumerate(uploaded_files):
-                    status_text.text(f"Uploading {file.name} ({i+1}/{len(uploaded_files)})...")
+                for i, item in enumerate(upload_queue):
+                    status_text.text(f"Processing row {i+1}/{len(upload_queue)} (VIN: {item['vin']})...")
                     
-                    try:
-                        # Passing the clean upload_params to the SDK
-                        # The SDK handles the timestamp and signature generation automatically
-                        res = cloudinary.uploader.upload(
-                            file,
-                            **upload_params
-                        )
-                        uploaded_urls.append(res['secure_url'])
-                    except Exception as e:
-                        st.error(f"Error with {file.name}: {e}")
+                    # 1. Prepare Metadata (Context)
+                    context_dict = {}
+                    for k, v in item['row_dict'].items():
+                        if pd.notna(v) and str(v).strip() != "":
+                            # Cloudinary context values must be strings and shouldn't contain certain special chars
+                            clean_val = str(v).replace('=', '').replace('|', '') 
+                            context_dict[str(k)] = clean_val
                     
-                    progress_bar.progress((i + 1) / len(uploaded_files))
+                    # 2. Prepare Tags (Split by dash)
+                    tags = []
+                    tags_col = next((k for k in item['row_dict'].keys() if str(k).lower().strip() == 'tags'), None)
+                    if tags_col and pd.notna(item['row_dict'][tags_col]):
+                        raw_tags = str(item['row_dict'][tags_col]).split('-')
+                        tags = [t.strip() for t in raw_tags if t.strip()]
+                    
+                    # 3. Prepare Folder Path
+                    clean_brand = re.sub(r'[^a-zA-Z0-9]', '', item['brand']).upper()
+                    clean_series = re.sub(r'[^a-zA-Z0-9]', '', item['series']).upper()
+                    clean_vin = re.sub(r'[^a-zA-Z0-9]', '', item['vin']).upper()
+                    folder_path = f"inventory/{clean_brand}/{clean_series}/{clean_vin}"
+                    
+                    main_url = ""
+                    other_urls = []
+                    
+                    # 4. Upload Main Image
+                    if item['main_img']:
+                        try:
+                            # Add 'main' tag to easily query hero images later
+                            res = cloudinary.uploader.upload(
+                                item['main_img'],
+                                folder=folder_path,
+                                context=context_dict,
+                                tags=tags + ["main"],
+                                use_filename=True,
+                                unique_filename=True,
+                                overwrite=True
+                            )
+                            main_url = res['secure_url']
+                        except Exception as e:
+                            st.error(f"Error with Main Image for VIN {item['vin']}: {e}")
+                    
+                    # 5. Upload Other Images
+                    if item['other_imgs']:
+                        for file in item['other_imgs']:
+                            try:
+                                res = cloudinary.uploader.upload(
+                                    file,
+                                    folder=folder_path,
+                                    context=context_dict,
+                                    tags=tags,
+                                    use_filename=True,
+                                    unique_filename=True,
+                                    overwrite=True
+                                )
+                                other_urls.append(res['secure_url'])
+                            except Exception as e:
+                                st.error(f"Error with Other Image for VIN {item['vin']}: {e}")
+                    
+                    # 6. Append URLs back to the row
+                    updated_row = item['row_dict'].copy()
+                    updated_row['MAIN_IMG_URL'] = main_url
+                    updated_row['OTHER_IMG_URLS'] = ", ".join(other_urls)
+                    results.append(updated_row)
+                    
+                    progress_bar.progress((i + 1) / len(upload_queue))
                 
-                status_text.empty()
+                status_text.success("✅ All uploads completed successfully!")
                 
-                if uploaded_urls:
-                    st.success(f"✅ Successfully uploaded {len(uploaded_urls)} images!")
-                    st.subheader("Results for Spreadsheet")
-                    st.write("**MAIN_IMG:**")
-                    st.code(uploaded_urls[0], language="text")
-                    st.write("**IMG_LIST:**")
-                    st.code(", ".join(uploaded_urls), language="text")
-                    st.image(uploaded_urls[0], width=300)
-                    st.balloons()
+                # Save to session state so it survives re-renders
+                st.session_state['processed_df'] = pd.DataFrame(results)
+
+            # --- 4. RESULTS & DOWNLOAD ---
+            if 'processed_df' in st.session_state:
+                st.subheader("Final Output")
+                st.dataframe(st.session_state['processed_df'], use_container_width=True)
+                
+                csv_data = st.session_state['processed_df'].to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    label="📥 Download Updated Inventory CSV",
+                    data=csv_data,
+                    file_name="updated_inventory_with_urls.csv",
+                    mime="text/csv",
+                    type="primary"
+                )
