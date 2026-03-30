@@ -2,7 +2,6 @@ import streamlit as st
 import cloudinary
 import cloudinary.uploader
 import re
-import time
 
 # --- 1. ACCESS CONTROL ---
 def check_password():
@@ -28,7 +27,7 @@ def check_password():
 # --- 2. CLOUDINARY CONFIG ---
 def init_cloudinary():
     try:
-        # We strip() to ensure no hidden newline characters from the secrets manager
+        # Strictly follow the expert advice to use clean, stripped credentials
         cloudinary.config(
             cloud_name = st.secrets["CLOUDINARY_NAME"].strip(),
             api_key = st.secrets["CLOUDINARY_KEY"].strip(),
@@ -52,27 +51,27 @@ if check_password():
         c1, c2, c3 = st.columns(3)
         
         with c1:
-            brand = st.text_input("Brand", placeholder="TOYOTA").strip()
-            model = st.text_input("Model", placeholder="Sai").strip()
+            brand_in = st.text_input("Brand", placeholder="TOYOTA").strip()
+            model_in = st.text_input("Model", placeholder="Sai").strip()
         with c2:
-            year = st.text_input("Year", placeholder="2018").strip()
-            vin = st.text_input("VIN / Chassis", placeholder="AZK10-12345").strip()
+            year_in = st.text_input("Year", placeholder="2018").strip()
+            vin_in = st.text_input("VIN / Chassis", placeholder="AZK10-12345").strip()
         with c3:
-            mileage = st.text_input("Mileage", placeholder="85000").strip()
-            status = st.selectbox("Status", ["Coming", "Available", "Sold"])
+            mileage_in = st.text_input("Mileage", placeholder="85000").strip()
+            status_in = st.selectbox("Status", ["Coming", "Available", "Sold"])
 
         # --- FILE UPLOAD SECTION ---
         st.header("2. Select Images")
         uploaded_files = st.file_uploader(
-            "Select multiple images or drag folder contents here", 
+            "Select multiple images", 
             type=['png', 'jpg', 'jpeg', 'webp'], 
             accept_multiple_files=True
         )
 
         # --- UPLOAD EXECUTION ---
         if st.button("🚀 Start Bulk Upload"):
-            if not vin or not brand:
-                st.error("Brand and VIN are required to create the folder structure.")
+            if not vin_in or not brand_in:
+                st.error("Brand and VIN are required.")
             elif not uploaded_files:
                 st.error("Please select at least one image.")
             else:
@@ -80,40 +79,48 @@ if check_password():
                 status_text = st.empty()
                 uploaded_urls = []
                 
-                # Sanitize identifiers for folder naming
-                clean_brand = re.sub(r'[^a-zA-Z0-9]', '', brand).upper()
-                clean_vin = re.sub(r'[^a-zA-Z0-9]', '', vin).upper()
-                folder_path = f"inventory/{clean_brand}/{clean_vin}"
+                # Pruning and cleaning inputs
+                clean_brand = re.sub(r'[^a-zA-Z0-9]', '', brand_in).upper()
+                clean_vin = re.sub(r'[^a-zA-Z0-9]', '', vin_in).upper()
                 
-                # 1. BUILD CLEAN METADATA (Context)
-                # We strictly exclude any empty strings to prevent signature mismatch
-                meta_dict = {}
-                if brand: meta_dict["brand"] = brand
-                if model: meta_dict["model"] = model
-                if year: meta_dict["year"] = year
-                if vin: meta_dict["vin"] = vin
-                if mileage: meta_dict["mileage"] = mileage
-                meta_dict["status"] = status
+                # 1. BUILD CLEAN PARAMS (Strictly following expert diagnosis)
+                # We build a dictionary and ONLY add keys that have values.
+                # This prevents "key=|" (empty values) from entering the signature.
+                
+                # Build Context (Metadata)
+                ctx = {}
+                if brand_in: ctx["brand"] = brand_in
+                if model_in: ctx["model"] = model_in
+                if year_in: ctx["year"] = year_in
+                if vin_in: ctx["vin"] = vin_in
+                if mileage_in: ctx["mileage"] = mileage_in
+                ctx["status"] = status_in
 
-                # 2. PREPARE TAGS
-                tag_list = [clean_brand, status]
-                if year: tag_list.append(year)
+                # Build Tags
+                tags = [clean_brand, status_in]
+                if year_in: tags.append(year_in)
 
-                # 3. LOOP THROUGH FILES
+                # Initialize final params dictionary
+                # This dictionary contains only non-empty, valid parameters
+                upload_params = {
+                    "folder": f"inventory/{clean_brand}/{clean_vin}",
+                    "tags": tags,
+                    "context": ctx,
+                    "use_filename": True,
+                    "unique_filename": True,
+                    "overwrite": True
+                }
+
+                # 2. LOOP THROUGH FILES
                 for i, file in enumerate(uploaded_files):
                     status_text.text(f"Uploading {file.name} ({i+1}/{len(uploaded_files)})...")
                     
                     try:
-                        # We use the explicit params here. 
-                        # Cloudinary SDK will generate the signature based on these.
+                        # Passing the clean upload_params to the SDK
+                        # The SDK handles the timestamp and signature generation automatically
                         res = cloudinary.uploader.upload(
                             file,
-                            folder = folder_path,
-                            context = meta_dict,
-                            tags = tag_list,
-                            use_filename = True,
-                            unique_filename = True,
-                            overwrite = True
+                            **upload_params
                         )
                         uploaded_urls.append(res['secure_url'])
                     except Exception as e:
@@ -125,15 +132,10 @@ if check_password():
                 
                 if uploaded_urls:
                     st.success(f"✅ Successfully uploaded {len(uploaded_urls)} images!")
-                    
-                    # Formatting results for the 'Inventory' Google Sheet
                     st.subheader("Results for Spreadsheet")
-                    
-                    st.write("**Column: MAIN_IMG (First URL)**")
+                    st.write("**MAIN_IMG:**")
                     st.code(uploaded_urls[0], language="text")
-                    
-                    st.write("**Column: IMG_LIST (All URLs comma-separated)**")
+                    st.write("**IMG_LIST:**")
                     st.code(", ".join(uploaded_urls), language="text")
-                    
-                    st.image(uploaded_urls[0], caption="Preview of Main Image", width=400)
+                    st.image(uploaded_urls[0], width=300)
                     st.balloons()
